@@ -21,4 +21,15 @@ final class AppTests: XCTestCase {
       }
     }
   }
+
+  /// The association file belongs to the API; the load balancer never sends that path here.
+  func testDoesNotServeAppleAppSiteAssociation() async throws {
+    let app = try await buildApplication(TestArguments())
+    try await app.test(.router) { client in
+      try await client.execute(uri: "/.well-known/apple-app-site-association", method: .get) {
+        response in
+        XCTAssertEqual(response.status, .notFound)
+      }
+    }
+  }
 }

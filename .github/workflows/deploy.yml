@@ -1,0 +1,77 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  # Nightly rebuild so the image picks up base image and OS security updates.
+  schedule:
+    - cron: "30 21 * * *"
+  # Manual redeploys (first image of a new project).
+  workflow_dispatch:
+
+# Serialize prod deploys but never cancel an in-flight one; overwriting an image
+# mid-rollout produces unpredictable revisions. The group is per ref, so a manual
+# run from another branch cannot replace a pending main deploy.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # Workload Identity Federation
+    env:
+      PROJECT_ID: ${{ vars.GOOGLE_CLOUD_PROJECT }}
+      REGION: ${{ vars.GOOGLE_CLOUD_REGION }}
+      SERVICE: ${{ vars.GOOGLE_CLOUD_SERVICE_NAME }}
+      REPO: ${{ vars.GOOGLE_CLOUD_ARTIFACT_REPO }}
+    steps:
+      # Workload Identity Federation trusts only this workflow on main; fail visibly
+      # instead of reporting success for a manual run that deployed nothing.
+      - name: Require main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Deploy runs only from main, not ${GITHUB_REF}"
+          exit 1
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GOOGLE_CLOUD_WIF_PROVIDER }}
+          service_account: ${{ vars.GOOGLE_CLOUD_DEPLOYER_SA }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Configure Docker auth for Artifact Registry
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --project="$PROJECT_ID" --quiet
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build and push image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: true
+          tags: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.SERVICE }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Update Cloud Run service image
+        run: |
+          gcloud run services update "$SERVICE" \
+            --project="$PROJECT_ID" \
+            --region="$REGION" \
+            --container=app \
+            --image="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${SERVICE}:${GITHUB_SHA}"

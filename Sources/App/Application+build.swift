@@ -27,7 +27,7 @@ public func buildApplication(_ arguments: some AppArguments) async throws
       ?? .info
     return logger
   }()
-  let router = try buildRouter(environment: environment)
+  let router = buildRouter()
   let app = Application(
     router: router,
     configuration: .init(
@@ -40,7 +40,10 @@ public func buildApplication(_ arguments: some AppArguments) async throws
 }
 
 /// Build router
-func buildRouter(environment: Environment) throws -> Router<AppRequestContext> {
+///
+/// `/.well-known/apple-app-site-association` is not served here: the load balancer routes that path
+/// to the API, which generates it from the same `APPLE_APP_ID` it uses for passkeys (ADR-0005).
+func buildRouter() -> Router<AppRequestContext> {
   let router = Router(context: AppRequestContext.self)
   // Add middleware
   router.addMiddleware {
@@ -51,29 +54,5 @@ func buildRouter(environment: Environment) throws -> Router<AppRequestContext> {
   router.get("/") { _, _ in
     return "Hello!"
   }
-  
-  router.get("/.well-known/apple-app-site-association") { _, _ in
-    let appleAppIDs = environment.get("APPLE_APP_ID").map { [$0] } ?? []
-    return WebCredentials(webcredentials: .init(apps: appleAppIDs))
-  }
   return router
-}
-
-struct WebCredentials: Codable, ResponseGenerator {
-  var webcredentials: WebCredential
-  
-  struct WebCredential: Codable {
-    let apps: [String]
-  }
-  
-  func response(
-    from request: HummingbirdCore.Request,
-    context: some Hummingbird.RequestContext
-  ) throws -> HummingbirdCore.Response {
-    try context.responseEncoder.encode(
-      self,
-      from: request,
-      context: context
-    )
-  }
 }
