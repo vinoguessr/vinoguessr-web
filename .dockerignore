@@ -1,2 +1,5 @@
 .build
 .git
+# Credentials file google-github-actions/auth writes into the workspace (see its README).
+gha-creds-*.json
+**/gha-creds-*.json
